@@ -13,6 +13,35 @@ from .ontologies import (
     find_most_viable_parent,
 )
 
+class scDatasetOnDisk(Dataset):
+    """A class that represents a single cell dataset stored on disk.
+
+    Parameters
+    ----------
+    X: numpy.ndarray
+        Gene expression vectors for every cell.
+    Y: numpy.ndarray
+        Text labels for every cell.
+    study: numpy.ndarray
+        The study identifier for every cell.
+    """
+
+    def __init__(self, backed_adata, Y, study=None):
+        self.backed_adata = backed_adata
+        self.Y = Y
+        self.study = study
+
+    def __len__(self):
+        return len(self.Y)
+
+    def __getitem__(self, idx):
+        # data, label, study
+        return self.backed_adata[idx].X.toarray().flatten(), self.Y[idx], self.study[idx]
+
+
+
+
+
 
 class scDataset(Dataset):
     """A class that represents a single cell dataset.
@@ -128,6 +157,8 @@ class MetricLearningDataModule(pl.LightningDataModule):
         pin_memory: bool = False,
         persistent_workers: bool = False,
         multiprocessing_context: str = "fork",
+        use_backed_adata: bool = False,
+        val_aligned_with_train: bool = False,
     ):
         super().__init__()
         self.train_path = train_path
@@ -147,13 +178,18 @@ class MetricLearningDataModule(pl.LightningDataModule):
             self.persistent_workers = False
 
         # read in training dataset
-        train_data = anndata.read_h5ad(self.train_path)
+        if use_backed_adata:
+            self.train_data = anndata.read_h5ad(self.train_path, backed="r")
+        else:
+            self.train_data = anndata.read_h5ad(self.train_path)
 
         # keep cells whose celltype labels have valid ontology id
-        train_data = self.subset_valid_terms(train_data)
+        # only do this filtering if not using backed adata
+        if not use_backed_adata:
+            train_data = self.subset_valid_terms(train_data)
 
-        if self.remove_singleton_classes:
-            train_data = self.remove_singleton_label_ids(train_data)
+            if self.remove_singleton_classes:
+                train_data = self.remove_singleton_label_ids(train_data)
 
         if (
             gene_order_file is not None
@@ -175,9 +211,14 @@ class MetricLearningDataModule(pl.LightningDataModule):
 
         self.train_study = train_data.obs[self.study_column]  # studies
         self.train_Y = train_data.obs[self.label_column].values  # text labels
-        self.train_dataset = scDataset(
-            train_data.X, self.train_Y, study=self.train_study
-        )
+        if use_backed_adata:
+            self.train_dataset = scDatasetOnDisk(
+                train_data, self.train_Y, self.train_study
+            )
+        else:
+            self.train_dataset = scDataset(
+                train_data.X, self.train_Y, study=self.train_study
+            )
 
         self.val_dataset = None
         if val_path is not None:

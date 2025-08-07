@@ -1,6 +1,7 @@
 import anndata
 from collections import Counter
 import numpy as np
+import pandas as pd
 import pytorch_lightning as pl
 import torch
 from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
@@ -153,7 +154,8 @@ class MetricLearningDataModule(pl.LightningDataModule):
         train_data = self.subset_valid_terms(train_data)
 
         if self.remove_singleton_classes:
-            train_data = self.remove_singleton_label_ids(train_data)
+            labels_to_keep = self.remove_singleton_label_ids(train_data)
+            train_data = train_data[labels_to_keep]
 
         if (
             gene_order_file is not None
@@ -186,7 +188,8 @@ class MetricLearningDataModule(pl.LightningDataModule):
                 self.subset_valid_terms(val_data), self.gene_order
             )  # gene space needs to match training set
             if self.remove_singleton_classes:
-                val_data = self.remove_singleton_label_ids(val_data)
+                labels_to_keep = self.remove_singleton_label_ids(val_data)
+                val_data = val_data[labels_to_keep]
             val_data = val_data[
                 val_data.obs[self.label_column].isin(self.class_names)
             ]  # labels need to be subsetted to training labels
@@ -225,7 +228,7 @@ class MetricLearningDataModule(pl.LightningDataModule):
 
     def remove_singleton_label_ids(
         self, data: anndata.AnnData, n_studies: int = 2
-    ) -> anndata.AnnData:
+    ) -> pd.Series:
         """Ensure labels exist in at least a minimum number of studies.
 
         Parameters
@@ -267,8 +270,14 @@ class MetricLearningDataModule(pl.LightningDataModule):
         )
         well_represented_labels = cell_type_counts[cell_type_counts >= n_studies].index
 
-        data = data[obs[self.label_column].isin(well_represented_labels)].copy()
-        return data
+        labels_to_keep = obs[self.label_column].isin(well_represented_labels)
+        return labels_to_keep
+
+    @property
+    def class_names(self) -> set:
+        """Get the set of class names."""
+        return self._class_names
+
 
     def get_sampler_weights(
         self,

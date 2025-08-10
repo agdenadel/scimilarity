@@ -316,7 +316,12 @@ class MetricLearningDataModule(pl.LightningDataModule):
             ]
             max_weight = np.quantile(sample_weights, 0.999) * 2
             sample_weights = torch.Tensor([min(max_weight, x) for x in sample_weights])
-        return WeightedRandomSampler(sample_weights, len(sample_weights))
+        
+        # this implementation is pytorch throws this error with large datasets
+        # https://github.com/pytorch/pytorch/issues/2576
+        # CUDA multinomial is limited to 2^24 categories
+        #return WeightedRandomSampler(sample_weights, len(sample_weights))
+        return MyOwnWeightedRandomSampler(sample_weights, len(sample_weights))
 
     def train_dataloader(self) -> DataLoader:
         """Load the training dataset.
@@ -372,3 +377,61 @@ class MetricLearningDataModule(pl.LightningDataModule):
         """
 
         return self.val_dataloader()
+
+
+from math import ceil
+from torch import cat, multinomial, as_tensor, double as torch_double
+from torch.utils.data.sampler import Sampler
+
+
+class MyOwnWeightedRandomSampler(Sampler):
+    def __init__(self,
+                 weights,
+                 num_samples,
+                 replacement=True):
+        super(MyOwnWeightedRandomSampler, self).__init__(data_source=weights)
+        if not isinstance(num_samples, int) or isinstance(num_samples, bool) or \
+                num_samples <= 0:
+            raise ValueError("num_samples should be a positive integer "
+                             "value, but got num_samples={}".format(num_samples))
+        if not isinstance(replacement, bool):
+            raise ValueError("replacement should be a boolean value, but got "
+                             "replacement={}".format(replacement))
+        self._max_size_per_group = 2 ** 24
+
+        self.num_samples = num_samples
+        self.replacement = replacement
+        self._num_categories = len(weights)
+        # how many groups we can get
+        self._num_groups = int(ceil(
+            float(self._num_categories) / self._max_size_per_group
+        ))
+        self.weights_list = list()
+        self.start_index_list = list()
+        self.num_samples_list = list()
+        for i in range(self._loop_times):
+            start = i * self._max_size_per_group
+            end = min(start + self._max_size_per_group, self._num_categories)
+            self.weights_list.append(
+                as_tensor(weights[start: end], dtype=torch_double)
+            )
+            self.start_index_list.append(start)
+            self.num_samples_list.append(end - start)
+
+    def __iter__(self):
+        if self._num_groups <= 1:
+            # default implementation copied from torch.utils.data.sampler.WeightedRandomSampler
+            rand_tensor = multinomial(self.weights_list[0],
+                                      self.num_samples, self.replacement)
+            yield from iter(rand_tensor.tolist())
+        else:
+            # if self._num_groups > 1, then it means there are over 2^24 elements in weights
+            rand_tensor_list = list()
+            for i in range(self._num_groups):
+                # index from torch.multinomial starts with 0, so we should add an offset to get a correct index of the whole dataset
+                rand_tensor = multinomial(self.weights_list[i],
+                                          self.num_samples_list[i], self.replacement) + self.start_index_list[i]
+                rand_tensor_list.append(rand_tensor)
+            # finally, we can get final sample indexes tensor
+            rand_indexes = cat(tensors=rand_tensor_list, dim=0)
+            yield from iter(rand_indexes.tolist())

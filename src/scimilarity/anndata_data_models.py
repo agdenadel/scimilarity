@@ -409,6 +409,11 @@ class MyOwnWeightedRandomSampler(Sampler):
         self.weights_list = list()
         self.start_index_list = list()
         self.num_samples_list = list()
+
+        self._loop_times = int(ceil(
+            float(self._num_categories) / self._max_size_per_group
+        ))
+        
         for i in range(self._loop_times):
             start = i * self._max_size_per_group
             end = min(start + self._max_size_per_group, self._num_categories)
